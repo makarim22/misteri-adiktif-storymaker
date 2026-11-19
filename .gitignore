@@ -1,0 +1,14 @@
+# Local data and secrets: never commit these
+studio.db
+studio.db-wal
+studio.db-shm
+*.db
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Old design snapshot kept on disk only
+design-v1-backup/
