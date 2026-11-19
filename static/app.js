@@ -56,6 +56,13 @@ const fmtDate = (ts) => new Date(ts * 1000).toLocaleString(dateLocale(), { dateS
 const words = (s) => (s.trim() ? s.trim().split(/\s+/).length : 0);
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+// Costs are USD (how Anthropic bills). Rupiah is shown only when an admin has entered an exchange rate.
+const RATE = { idr: 0 };
+// Locale-aware decimals ("$0,017" in Indonesian, "$0.017" in English) so a decimal is never read as thousands.
+const fmtUsd = (x) => { if (!x) return "$0"; const d = x < 0.01 ? 4 : x < 1 ? 3 : 2;
+  return "$" + x.toLocaleString(dateLocale(), { minimumFractionDigits: d, maximumFractionDigits: d }); };
+const fmtMoney = (x) => (x == null ? "?" : fmtUsd(x) + (RATE.idr > 0 && x > 0 ? ` (\u2248 Rp ${Math.round(x * RATE.idr).toLocaleString(dateLocale())})` : ""));
+const num = (n) => Number(n || 0).toLocaleString(dateLocale());
 
 function fail(e) { if (e.message !== "Signed out") toast(e.message); }
 
@@ -140,13 +147,14 @@ async function loginView() {
   const f = {
     name: h("input", { type: "text", placeholder: t("field.name"), "aria-label": t("field.name") }),
     user: h("input", { type: "text", placeholder: t("ph.username"), "aria-label": t("field.username"), autocomplete: "username" }),
+    token: h("input", { type: "password", "aria-label": t("field.setuptoken"), autocomplete: "off" }),
     pw: h("input", { type: "password", placeholder: t("ph.password"), "aria-label": t("field.password"), autocomplete: setup ? "new-password" : "current-password" }),
   };
   const submit = async () => {
     err.textContent = "";
     try {
       const r = await api("POST", setup ? "/setup" : "/login",
-        { username: f.user.value, password: f.pw.value, display_name: f.name.value });
+        { username: f.user.value, password: f.pw.value, display_name: f.name.value, setup_token: f.token.value });
       S.user = r.user; location.hash = "#/"; render();
     } catch (e) { err.textContent = e.message; }
   };
@@ -155,6 +163,7 @@ async function loginView() {
     h("span", { class: "wordmark" }, "Story Studio"),
     h("h1", {}, setup ? t("login.setup") : t("login.title")),
     h("p", { class: "muted" }, setup ? t("login.setup.sub") : t("login.sub")),
+    setup && st.needs_token && [h("label", {}, t("field.setuptoken")), f.token, h("p", { class: "muted" }, t("setuptoken.help"))],
     setup && [h("label", {}, t("field.name")), f.name], h("label", {}, t("field.username")), f.user, h("label", {}, t("field.password")), f.pw,
     err, h("div", { class: "bar" }, h("button", { class: "btn", style: "width:100%", onclick: submit }, setup ? t("btn.create") : t("btn.login"))),
     h("div", { class: "auth-prefs" }, prefsBar()))));
@@ -313,49 +322,147 @@ async function videoView(main, id) {
 
   // AI tab
   const providerOk = settings.providers[settings.provider].has_key;
+  const isClaude = settings.provider === "anthropic";
+  const cat = settings.catalog;
+  RATE.idr = settings.rate_idr || 0;
+  const modelLabel = (mid) => (cat.models.find((m) => m.id === mid) || { label: mid || "?" }).label;
   const stageSel = h("select", {}, stages.map((s) => h("option", { value: s.id }, t("ai." + s.id))));
   const aiInput = h("textarea", { rows: "6", placeholder: t("ai.ph"), "aria-label": t("ai.ph") });
   const hint = h("p", { class: "muted" });
+  const modelSel = h("select", { "aria-label": t("ai.model") });
+  const estLine = h("p", { class: "est", "aria-live": "polite" });
+  const budgetEl = h("div", { class: "budget" });
   const out = h("div", { class: "out", style: "display:none" });
+  const outMeta = h("p", { class: "muted res-meta", style: "display:none" });
   const outBtns = h("div", { class: "bar", style: "display:none" });
   const verb = () => t("verb." + stageSel.value);
   const runBtn = h("button", { class: "btn" }, verb());
   const runsBox = h("div");
-  let lastText = "";
+  let lastText = "", est = null, usage = settings.usage;
+
+  const drawBudget = () => {
+    const b = settings.budget_usd, sp = usage.spent_usd;
+    if (!b && !sp) { fill(budgetEl); return; }
+    const pct = b ? sp / b : 0;
+    fill(budgetEl, h("p", { class: "muted" + (pct >= 1 ? " over" : pct >= 0.8 ? " near" : "") },
+      b ? t("budget.line", { s: fmtMoney(sp), b: fmtMoney(b), p: Math.round(pct * 100) }) : t("budget.spent", { s: fmtMoney(sp) })),
+      b ? h("div", { class: "meter", role: "presentation" }, h("span", { style: `width:${Math.min(100, Math.round(pct * 100))}%` })) : null);
+  };
+  const drawModels = () => {
+    if (!isClaude) { fill(modelSel); return; }
+    const cur = modelSel.value;
+    const def = est ? est.default_model : "";
+    fill(modelSel, h("option", { value: "" }, t("ai.model.auto", { m: def ? modelLabel(def) : "..." })),
+      cat.models.map((m) => { const e = est && est.models.find((x) => x.id === m.id);
+        return h("option", { value: m.id }, m.label + (e && e.cold_usd != null ? ` (~${fmtUsd(e.cold_usd)})` : "")); }));
+    modelSel.value = cur;
+    const row = est && est.models.find((x) => x.id === (modelSel.value || est.default_model));
+    if (!row) { estLine.textContent = ""; return; }
+    estLine.textContent = t("est.line", { c: fmtMoney(row.cold_usd), w: fmtMoney(row.warm_usd) })
+      + (row.cacheable ? (row.cache_likely ? " " + t("est.cacheLikely") : "") : " " + t("est.nocache"))
+      + " " + t("est.basis", { i: num(est.system_tokens + est.user_tokens), o: num(est.out_tokens) })
+      + " " + t(est.out_from_history ? "est.hist" : "est.guess");
+  };
+  let estTimer;
+  const loadEstimate = () => {
+    if (!isClaude) return;
+    clearTimeout(estTimer);
+    estTimer = setTimeout(async () => {
+      try { est = await api("POST", "/ai/estimate", { stage: stageSel.value, input_chars: aiInput.value.length, script_chars: script.value.length }); usage = est.usage; drawModels(); drawBudget(); } catch (_) {}
+    }, 350);
+  };
   const syncStage = () => {
     const st = stages.find((s) => s.id === stageSel.value);
     aiInput.style.display = st.needs === "script" ? "none" : "";
     runBtn.textContent = verb();
     hint.textContent = st.needs === "script" ? t("ai.hint.script") : st.needs === "both" ? t("ai.hint.both") : "";
+    loadEstimate();
   };
-  stageSel.addEventListener("change", syncStage); syncStage();
+  stageSel.addEventListener("change", syncStage);
+  modelSel.addEventListener("change", drawModels);
+  aiInput.addEventListener("input", loadEstimate);
+  script.addEventListener("input", () => { if (stages.find((s) => s.id === stageSel.value).needs !== "input") loadEstimate(); });
+  syncStage(); drawBudget(); drawModels();
+
   const insertText = (txt, where) => {
     if (where === "cursor") { const a = script.selectionStart, b = script.selectionEnd; script.setRangeText(txt, a, b, "end"); }
     else script.value = script.value.replace(/\s*$/, "") + "\n\n" + txt + "\n";
     script.dispatchEvent(new Event("input")); toast(t("toast.inserted"));
   };
+  const copyText = (txt) => navigator.clipboard.writeText(txt).then(() => toast(t("toast.copied")));
   outBtns.append(
     h("button", { class: "btn ghost sm", onclick: () => insertText(lastText, "end") }, t("ai.addEnd")),
     h("button", { class: "btn ghost sm", onclick: () => insertText(lastText, "cursor") }, t("ai.atCursor")),
-    h("button", { class: "btn ghost sm", onclick: () => navigator.clipboard.writeText(lastText).then(() => toast(t("toast.copied"))) }, t("copy")));
+    h("button", { class: "btn ghost sm", onclick: () => copyText(lastText) }, t("copy")));
+
+  const resMeta = (r) => [modelLabel(r.model), r.cost_usd != null ? fmtMoney(r.cost_usd) : t("res.nocost"),
+    r.cached ? t("res.cached") : t("res.notcached"), t("res.tokens", { i: num(r.usage.input + r.usage.cache_read + r.usage.cache_write), o: num(r.usage.output) })].join(" | ");
+  // Posts an AI request; if the monthly budget is used up, asks once before continuing. Returns null when declined.
+  async function guarded(path, payload) {
+    try { return await api("POST", path, payload); } catch (e) {
+      if (e.data && e.data.code === "over_budget") {
+        if (!confirm(t("budget.confirm", { s: fmtMoney(e.data.spent_usd), b: fmtMoney(e.data.budget_usd) }))) return null;
+        return api("POST", path, { ...payload, confirm_over: true });
+      }
+      throw e;
+    }
+  }
+  const payload = () => ({ video_id: id, stage: stageSel.value, input: aiInput.value, script: script.value });
   runBtn.addEventListener("click", async () => {
     runBtn.disabled = true; runBtn.replaceChildren(h("span", { class: "spin" }), t("ai.working"));
     try {
-      const r = await api("POST", "/ai", { video_id: id, stage: stageSel.value, input: aiInput.value, script: script.value });
-      lastText = r.text; out.textContent = r.text; out.style.display = ""; outBtns.style.display = ""; loadRuns();
-    } catch (e) { fail(e); out.textContent = e.message; out.style.display = ""; outBtns.style.display = "none"; }
+      const r = await guarded("/ai", { ...payload(), model: modelSel.value || undefined });
+      if (r) {
+        lastText = r.text; out.textContent = r.text; out.style.display = ""; outBtns.style.display = "";
+        outMeta.textContent = resMeta(r); outMeta.style.display = "";
+        usage = r.month; drawBudget(); loadRuns(); loadEstimate();
+      }
+    } catch (e) { fail(e); out.textContent = e.message; out.style.display = ""; outBtns.style.display = "none"; outMeta.style.display = "none"; }
     finally { runBtn.disabled = false; runBtn.textContent = verb(); }
   });
+
+  // compare two models on the same task
+  const pair = [cat.models[0].id, cat.models[1].id];
+  const optsFor = () => cat.models.map((m) => h("option", { value: m.id }, m.label));
+  const cmpA = h("select", { "aria-label": t("cmp.a") }, optsFor()), cmpB = h("select", { "aria-label": t("cmp.b") }, optsFor());
+  cmpA.value = pair[0]; cmpB.value = pair[1];
+  const cmpBtn = h("button", { class: "btn ghost sm" }, t("cmp.btn"));
+  function showCompare(results) {
+    const dlg = h("dialog", { class: "cmp-dlg", "aria-label": t("cmp.title") },
+      h("h2", {}, t("cmp.title")),
+      h("div", { class: "cmp" }, results.map((r) => h("section", { class: "cmp-col" },
+        h("h3", {}, modelLabel(r.model)),
+        r.error ? h("p", { class: "err" }, errText(r.error)) : [h("p", { class: "muted" }, resMeta(r)), h("div", { class: "out" }, r.text),
+          h("div", { class: "bar" }, h("button", { class: "btn ghost sm", onclick: () => insertText(r.text, "end") }, t("ai.addEnd")),
+            h("button", { class: "btn ghost sm", onclick: () => copyText(r.text) }, t("copy")))]))),
+      h("div", { class: "bar" }, h("button", { class: "btn", onclick: () => dlg.close() }, t("close"))));
+    dlg.addEventListener("close", () => dlg.remove());
+    document.body.append(dlg); dlg.showModal();
+  }
+  cmpBtn.addEventListener("click", async () => {
+    if (cmpA.value === cmpB.value) { toast(errText("Choose two different models")); return; }
+    cmpBtn.disabled = true; cmpBtn.replaceChildren(h("span", { class: "spin" }), t("ai.working"));
+    try {
+      const r = await guarded("/ai/compare", { ...payload(), models: [cmpA.value, cmpB.value] });
+      if (r) { usage = r.results.find((x) => x.month)?.month || usage; drawBudget(); showCompare(r.results); loadRuns(); loadEstimate(); }
+    } catch (e) { fail(e); } finally { cmpBtn.disabled = false; cmpBtn.textContent = t("cmp.btn"); }
+  });
+  const compareBox = isClaude ? h("details", { class: "compare" }, h("summary", {}, t("cmp.summary")),
+    h("p", { class: "muted" }, t("cmp.note")),
+    h("div", { class: "row2" }, cmpA, cmpB), h("div", { class: "bar" }, cmpBtn)) : null;
+
   async function loadRuns() {
     const runs = await api("GET", `/videos/${id}/ai_runs`);
     fill(runsBox, h("h2", { style: "margin-top:28px" }, t("ai.earlier")),
       runs.length ? runs.map((r) => h("details", { class: "item" },
-        h("summary", {}, t("ai." + r.stage), h("span", {}, r.author + ", " + fmtDate(r.created))),
+        h("summary", {}, t("ai." + r.stage), h("span", {}, [r.author, fmtDate(r.created), r.model ? modelLabel(r.model) : null, r.cost_usd != null ? fmtMoney(r.cost_usd) : null].filter(Boolean).join(", "))),
         h("div", { class: "out" }, r.output),
-        h("button", { class: "btn ghost sm", onclick: () => navigator.clipboard.writeText(r.output).then(() => toast(t("toast.copied"))) }, t("copy")))) : h("div", { class: "empty" }, t("ai.none")));
+        h("button", { class: "btn ghost sm", onclick: () => copyText(r.output) }, t("copy")))) : h("div", { class: "empty" }, t("ai.none")));
   }
-  aiBox.append(!providerOk && h("p", { class: "err" }, t("ai.nokey", { p: settings.providers[settings.provider].label })),
-    h("label", {}, t("ai.task")), stageSel, hint, aiInput, h("div", { class: "bar" }, runBtn), out, outBtns, runsBox);
+  fill(aiBox, !providerOk && h("p", { class: "err" }, t("ai.nokey", { p: settings.providers[settings.provider].label })),
+    budgetEl, h("label", {}, t("ai.task")), stageSel, hint, aiInput,
+    isClaude ? [h("label", {}, t("ai.model")), modelSel, estLine] : h("p", { class: "muted" }, t("est.claudeOnly")),
+    h("div", { class: "bar" }, runBtn), outMeta, out, outBtns, compareBox, runsBox);
   loadRuns().catch(fail);
 
   // Comments tab
@@ -523,8 +630,51 @@ async function settingsView(main) {
   const cur = h("input", { type: "password", placeholder: t("pw.cur"), "aria-label": t("pw.cur"), autocomplete: "current-password" });
   const np = h("input", { type: "password", placeholder: t("pw.new"), "aria-label": t("pw.new"), autocomplete: "new-password" });
 
+  const cat = set.catalog; RATE.idr = set.rate_idr || 0;
+  const mlabel = (mid) => (cat.models.find((m) => m.id === mid) || { label: mid }).label;
+  const presetSel = h("select", { disabled: !admin, "aria-label": t("mod.preset") },
+    Object.keys(cat.presets).map((p) => h("option", { value: p }, t("preset." + p))));
+  presetSel.value = set.preset;
+  const presetDesc = h("p", { class: "muted" });
+  const taskSels = {};
+  const modelOpts = () => cat.models.map((m) => h("option", { value: m.id }, m.label));
+  const taskRows = cat.tasks.map((tk) => {
+    taskSels[tk] = h("select", { disabled: !admin, "aria-label": t("ai." + tk) });
+    return h("tr", {}, h("td", {}, t("ai." + tk)), h("td", {}, taskSels[tk]));
+  });
+  const drawTasks = () => {
+    presetDesc.textContent = t("preset." + presetSel.value + ".desc");
+    for (const tk of cat.tasks) {
+      const cur = taskSels[tk].dataset.v ?? (set.task_models[tk] || "");
+      fill(taskSels[tk], h("option", { value: "" }, t("mod.follow", { m: mlabel(cat.presets[presetSel.value][tk]) })), modelOpts());
+      taskSels[tk].value = cur; taskSels[tk].dataset.v = cur;
+      taskSels[tk].onchange = () => { taskSels[tk].dataset.v = taskSels[tk].value; };
+    }
+  };
+  presetSel.addEventListener("change", drawTasks); drawTasks();
+  const budgetIn = h("input", { type: "number", min: "0", step: "0.5", value: set.budget_usd || "", disabled: !admin, placeholder: "0" });
+  const rateIn = h("input", { type: "number", min: "0", step: "1", value: set.rate_idr || "", disabled: !admin, placeholder: "0" });
+  const u = set.usage;
+  const modelCard = h("div", { class: "card" }, h("h2", {}, t("mod.title")),
+    h("p", { class: "muted" }, t("mod.note")),
+    h("label", {}, t("mod.preset")), presetSel, presetDesc,
+    h("label", {}, t("mod.tasks")), h("table", {}, taskRows),
+    h("label", {}, t("mod.budget")), budgetIn, h("p", { class: "muted" }, t("mod.budget.help")),
+    h("label", {}, t("mod.rate")), rateIn, h("p", { class: "muted" }, t("mod.rate.help")),
+    h("p", {}, t("mod.usage", { s: fmtMoney(u.spent_usd), n: u.runs, m: u.month }) + (u.unpriced_runs ? " " + t("mod.unpriced", { n: u.unpriced_runs }) : "")),
+    h("h2", { style: "margin-top:22px" }, t("mod.prices")),
+    h("table", { class: "prices" }, h("tr", {}, ["th.model", "th.tier", "th.in", "th.out", "th.cacheRead"].map((k) => h("th", {}, t(k)))),
+      cat.models.map((m) => h("tr", {}, h("td", {}, m.label), h("td", { class: "muted" }, t("tier." + m.tier)),
+        h("td", {}, "$" + m.in), h("td", {}, "$" + m.out), h("td", {}, "$" + m.cache_read)))),
+    h("p", { class: "muted" }, t("mod.prices.note", { d: cat.prices_checked }) + " ",
+      h("a", { href: cat.prices_url, target: "_blank", rel: "noopener noreferrer" }, t("mod.prices.link"))),
+    admin && h("div", { class: "bar" }, h("button", { class: "btn", onclick: async () => {
+      const task_models = {}; for (const tk of cat.tasks) task_models[tk] = taskSels[tk].value;
+      try { await api("PUT", "/settings", { preset: presetSel.value, task_models, budget_usd: +budgetIn.value || 0, rate_idr: +rateIn.value || 0 }); toast(t("toast.saved")); render(); } catch (e) { fail(e); }
+    } }, t("mod.save"))));
+
   main.append(pageHead(t("set.title"), t("set.sub")), h("div", { class: "grid2" },
-    h("div", { class: "card" }, h("h2", {}, t("set.ai")),
+    h("div", { class: "stack" }, h("div", { class: "card" }, h("h2", {}, t("set.ai")),
       !admin && h("p", { class: "muted" }, t("set.adminonly")),
       h("label", {}, t("set.provider")), provider, h("label", {}, t("set.model")), model, defaultHint,
       keyRows, h("label", {}, t("set.limit")), limit,
@@ -533,7 +683,7 @@ async function settingsView(main) {
       admin && h("div", { class: "bar" }, h("button", { class: "btn", onclick: async () => {
         const api_keys = {}; for (const [k, el] of Object.entries(keys)) if (el.value.trim()) api_keys[k] = el.value;
         try { await api("PUT", "/settings", { provider: provider.value, model: model.value, example_limit: +limit.value, wpm: +wpmIn.value, api_keys }); toast(t("toast.saved")); render(); } catch (e) { fail(e); }
-      } }, t("set.save")))),
+      } }, t("set.save")))), modelCard),
     h("div", { class: "stack" },
       h("div", { class: "card" }, h("h2", {}, t("team")),
         h("table", {}, S.users.map((u) => h("tr", {}, h("td", {}, h("span", { class: "who", style: "display:flex;align-items:center;gap:10px" }, avatar(u.display_name), u.display_name)), h("td", { class: "muted" }, u.username), h("td", { class: "muted" }, u.is_admin ? t("role.admin") : t("role.member")),
