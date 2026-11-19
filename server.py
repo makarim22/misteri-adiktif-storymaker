@@ -109,7 +109,7 @@ class HttpError(Exception):
         self.code, self.message = code, message
 
 
-STARTER_STYLE_GUIDE = """CHANNEL: (name, niche, audience)
+OLD_STYLE_GUIDE_EN = """CHANNEL: (name, niche, audience)
 
 VOICE
 - Tone: (e.g. calm, curious, a little dry humour)
@@ -131,7 +131,7 @@ AVOID
 - (cliches, filler words, phrases you hate)
 """
 
-STARTER_TEMPLATE = """HOOK (0:00-0:30)
+OLD_TEMPLATE_EN = """HOOK (0:00-0:30)
 [VISUAL: ]
 
 
@@ -154,9 +154,59 @@ OUTRO / CTA
 """
 
 
+STARTER_STYLE_GUIDE = """CHANNEL: (nama channel, topik, penonton)
+
+BAHASA DAN SAPAAN
+- Bahasa Indonesia baku, enak didengar. Hindari bahasa gaul seperti gue/lo.
+- Sapaan: (tulis satu: aku/kamu atau saya/Anda). Pakai konsisten dari awal sampai akhir.
+
+SUARA
+- Nada: (misalnya tenang, penasaran, sedikit humor kering)
+- Kalimat pendek dan lisan. Variasikan ritme. Satu gagasan per kalimat.
+
+PEMBUKA
+- Mulai di tengah kejadian atau dengan fakta paling mengejutkan. Tanpa basa-basi sapaan panjang.
+- Dalam 30 detik pertama, penonton harus tahu pertanyaan apa yang akan dijawab cerita ini.
+
+TEMPO
+- Munculkan pertanyaan baru setiap 60-90 detik.
+- Jawab pertanyaan terbesar menjelang akhir, lalu tutup dengan cepat.
+
+DIPAKAI
+- (frasa, gaya, dan transisi yang disukai)
+
+DIHINDARI
+- (klise, kata pengisi, frasa yang tidak disukai)
+"""
+
+STARTER_TEMPLATE = """PEMBUKA (0:00-0:30)
+[VISUAL: ]
+
+
+LATAR - siapa, di mana, apa yang normal
+
+
+KETEGANGAN - bagian 1
+
+
+KETEGANGAN - bagian 2
+
+
+TITIK BALIK
+
+
+PENUTUP
+"""
+
 def seed_defaults(conn):
     if not conn.execute("SELECT 1 FROM settings WHERE key='style_guide'").fetchone():
         set_setting(conn, "style_guide", STARTER_STYLE_GUIDE)
+        set_setting(conn, "script_template", STARTER_TEMPLATE)
+        return
+    # Existing database: replace the old English starter text only if nobody has edited it.
+    if get_setting(conn, "style_guide") == OLD_STYLE_GUIDE_EN:
+        set_setting(conn, "style_guide", STARTER_STYLE_GUIDE)
+    if get_setting(conn, "script_template") == OLD_TEMPLATE_EN:
         set_setting(conn, "script_template", STARTER_TEMPLATE)
 
 
@@ -477,10 +527,8 @@ def api_script_save(h, conn, user, body, vid):
         # someone else saved since this editor loaded; never overwrite silently
         other = conn.execute("SELECT display_name FROM users u JOIN versions s ON s.user_id=u.id "
                              "WHERE s.video_id=? ORDER BY s.id DESC LIMIT 1", (vid,)).fetchone()
-        return (409, {"error": "This script was changed by "
-                      + (other["display_name"] if other else "someone else")
-                      + " since you opened it. Copy your text, reload, and merge.",
-                      "current_rev": v["rev"]})
+        return (409, {"error": "Script changed by someone else", "code": "conflict",
+                      "author": other["display_name"] if other else None, "current_rev": v["rev"]})
     label = clean(body.get("label"), 100, "Label")
     if content != v["content"]:
         last = conn.execute("SELECT * FROM versions WHERE video_id=? ORDER BY id DESC LIMIT 1",
@@ -610,6 +658,7 @@ def api_settings(h, conn, user, body):
                           "has_key": bool(effective_key(conn, k))}
                       for k, v in ai.PROVIDERS.items()},
         "example_limit": int(get_setting(conn, "example_limit", "5")),
+        "wpm": int(get_setting(conn, "wpm", "150")),
     }
 
 
@@ -628,6 +677,14 @@ def api_settings_save(h, conn, user, body):
         except (TypeError, ValueError):
             raise HttpError(400, "Invalid example limit")
         set_setting(conn, "example_limit", str(n))
+    if "wpm" in body:
+        try:
+            w = int(body["wpm"])
+            if not 60 <= w <= 300:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HttpError(400, "Invalid wpm")
+        set_setting(conn, "wpm", str(w))
     keys = body.get("api_keys") or {}
     for p, k in keys.items():
         if p in ai.PROVIDERS and isinstance(k, str):

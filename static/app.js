@@ -37,7 +37,10 @@ async function api(method, path, body) {
   let data = {};
   try { data = await r.json(); } catch (_) {}
   if (r.status === 401 && path !== "/login") { S.user = null; render(); throw new Error("Signed out"); }
-  if (!r.ok) { const e = new Error(data.error || r.statusText); e.status = r.status; e.data = data; throw e; }
+  if (!r.ok) {
+    const msg = data.code === "conflict" ? t("conflict", { author: data.author || t("someone") }) : errText(data.error || r.statusText);
+    const e = new Error(msg); e.status = r.status; e.data = data; throw e;
+  }
   return data;
 }
 
@@ -49,7 +52,7 @@ function toast(msg) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
 }
 
-const fmtDate = (ts) => new Date(ts * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+const fmtDate = (ts) => new Date(ts * 1000).toLocaleString(dateLocale(), { dateStyle: "medium", timeStyle: "short" });
 const words = (s) => (s.trim() ? s.trim().split(/\s+/).length : 0);
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -63,11 +66,39 @@ function avatar(name) {
   return h("span", { class: "av", title: n }, ini);
 }
 
-const shortDate = (d) => new Date(d + "T00:00:00").toLocaleDateString([], { month: "short", day: "numeric" });
+const shortDate = (d) => new Date(d + "T00:00:00").toLocaleDateString(dateLocale(), { month: "short", day: "numeric" });
+// Language and theme switches. Choices are stored in this browser only.
+function setPref(key, value) { localStorage.setItem("ss." + key, value); applyPrefs(); render(); }
+function prefsBar() {
+  const seg = (label, key, current, options) => h("div", { class: "seg", role: "group", "aria-label": label },
+    options.map(([val, text]) => h("button", { type: "button", "aria-pressed": String(current === val), onclick: () => setPref(key, val) }, text)));
+  return h("div", { class: "prefs" },
+    seg(t("pref.lang"), "lang", PREFS.lang, [["id", "ID"], ["en", "EN"]]),
+    seg(t("pref.theme"), "theme", PREFS.theme, [["light", t("theme.light")], ["dark", t("theme.dark")], ["system", t("theme.system")]]));
+}
+const stageName = (s) => t("stage." + s);
 const stageColor = (s) => `var(--s-${s})`;
 function pageHead(title, sub, ...actions) {
-  return h("div", { class: "page-h" }, h("div", {}, h("h1", {}, title), sub && h("p", {}, sub)), actions.length ? h("div", {}, actions) : null);
+  return h("div", { class: "page-h" }, h("div", {}, h("h1", {}, title), sub && h("p", { class: "standfirst" }, sub)), actions.length ? h("div", {}, actions) : null);
 }
+
+// ---------- running order: sections of a script ----------
+// A section starts at a line that opens with an ALL-CAPS label (PEMBUKA, KETEGANGAN, OUTRO / CTA),
+// optionally followed by " - note" or "(0:00-0:30)". [bracketed notes] are not spoken, so they are not counted.
+// Indonesian and English opening headings are both recognised for the long-opening warning.
+const HEADING = /^([A-Z][A-Z0-9 \/&']*[A-Z0-9])(?=\s*(?:[-\u2013(:]|$))/;
+const OPENING = /^(PEMBUKA|HOOK)\b/;
+function parseSections(text, wpm) {
+  const out = []; let pos = 0, cur = null;
+  for (const line of text.split("\n")) {
+    const m = HEADING.exec(line);
+    if (m && m[1].length >= 3) { cur = { label: m[1], pos, words: 0 }; out.push(cur); }
+    else if (cur) cur.words += words(line.replace(/\[[^\]]*\]/g, " "));
+    pos += line.length + 1;
+  }
+  return out.map((s) => ({ ...s, secs: Math.round((s.words / wpm) * 60) }));
+}
+const fmtSecs = (s) => (s >= 60 ? t("t.ms", { m: Math.floor(s / 60), s: String(s % 60).padStart(2, "0") }) : t("t.s", { s }));
 
 // ---------- routing ----------
 async function render() {
@@ -81,15 +112,17 @@ async function render() {
   app.append(
     h("header", { class: "top" },
       h("a", { class: "wordmark", href: "#/" }, "Story Studio"),
-      h("nav", { class: "nav" }, nav("/", "Board"), nav("/library", "Library"), nav("/settings", "Team and AI")),
+      h("nav", { class: "nav" }, nav("/", t("nav.board")), nav("/calendar", t("nav.calendar")), nav("/library", t("nav.library")), nav("/settings", t("nav.settings"))),
       h("div", { class: "sp" }),
+      prefsBar(),
       h("div", { class: "me" }, avatar(S.user.display_name), h("span", { class: "nm" }, S.user.display_name),
-        h("button", { class: "linkbtn", onclick: async () => { await api("POST", "/logout", {}); S.user = null; render(); } }, "Sign out"))),
+        h("button", { class: "linkbtn", onclick: async () => { await api("POST", "/logout", {}); S.user = null; render(); } }, t("signout")))),
     main);
   try {
     S.users = await api("GET", "/users");
     let m;
     if ((m = route.match(/^\/video\/(\d+)$/))) await videoView(main, +m[1]);
+    else if (route === "/calendar") await calendarView(main);
     else if (route === "/library") await libraryView(main);
     else if (route === "/settings") await settingsView(main);
     else await boardView(main);
@@ -105,9 +138,9 @@ async function loginView() {
   const setup = st.needs_setup;
   const err = h("p", { class: "err" });
   const f = {
-    name: h("input", { type: "text", placeholder: "Your name" }),
-    user: h("input", { type: "text", placeholder: "username", autocomplete: "username" }),
-    pw: h("input", { type: "password", placeholder: "password (8+ chars)", autocomplete: setup ? "new-password" : "current-password" }),
+    name: h("input", { type: "text", placeholder: t("field.name"), "aria-label": t("field.name") }),
+    user: h("input", { type: "text", placeholder: t("ph.username"), "aria-label": t("field.username"), autocomplete: "username" }),
+    pw: h("input", { type: "password", placeholder: t("ph.password"), "aria-label": t("field.password"), autocomplete: setup ? "new-password" : "current-password" }),
   };
   const submit = async () => {
     err.textContent = "";
@@ -120,16 +153,17 @@ async function loginView() {
   [f.user, f.pw, f.name].forEach((i) => i.addEventListener("keydown", (e) => e.key === "Enter" && submit()));
   app.replaceChildren(h("div", { class: "auth" }, h("div", { class: "sheet" },
     h("span", { class: "wordmark" }, "Story Studio"),
-    h("h1", {}, setup ? "Create the first account" : "Sign in"),
-    h("p", { class: "muted" }, setup ? "This account becomes the admin. You can add your teammates afterwards." : "Pick up where the team left off."),
-    setup && [h("label", {}, "Your name"), f.name], h("label", {}, "Username"), f.user, h("label", {}, "Password"), f.pw,
-    err, h("div", { class: "bar" }, h("button", { class: "btn", style: "width:100%", onclick: submit }, setup ? "Create account" : "Sign in")))));
+    h("h1", {}, setup ? t("login.setup") : t("login.title")),
+    h("p", { class: "muted" }, setup ? t("login.setup.sub") : t("login.sub")),
+    setup && [h("label", {}, t("field.name")), f.name], h("label", {}, t("field.username")), f.user, h("label", {}, t("field.password")), f.pw,
+    err, h("div", { class: "bar" }, h("button", { class: "btn", style: "width:100%", onclick: submit }, setup ? t("btn.create") : t("btn.login"))),
+    h("div", { class: "auth-prefs" }, prefsBar()))));
 }
 
 // ---------- board ----------
 async function boardView(main) {
   let videos = await api("GET", "/videos");
-  const title = h("input", { type: "text", placeholder: "Title of the next video", "aria-label": "New video title" });
+  const title = h("input", { type: "text", placeholder: t("board.newph"), "aria-label": t("board.newaria") });
   const add = async () => {
     if (!title.value.trim()) return;
     try { const r = await api("POST", "/videos", { title: title.value }); location.hash = "#/video/" + r.id; } catch (e) { fail(e); }
@@ -140,7 +174,7 @@ async function boardView(main) {
     board.replaceChildren(...S.statuses.map((st) => {
       const items = videos.filter((v) => v.status === st);
       const col = h("div", { class: "col", style: "--c:" + stageColor(st) },
-        h("h3", {}, h("span", {}, cap(st)), h("span", { class: "n" }, items.length)));
+        h("h3", {}, h("span", {}, stageName(st)), h("span", { class: "n" }, items.length)));
       col.addEventListener("dragover", (e) => { e.preventDefault(); col.classList.add("over"); });
       col.addEventListener("dragleave", () => col.classList.remove("over"));
       col.addEventListener("drop", async (e) => {
@@ -156,20 +190,20 @@ async function boardView(main) {
         const card = h("a", { class: "vcard", href: "#/video/" + v.id, draggable: "true" },
           h("div", { class: "t" }, v.title),
           h("div", { class: "m" },
-            v.owner_name ? avatar(v.owner_name) : h("span", {}, "No owner"),
+            v.owner_name ? avatar(v.owner_name) : h("span", {}, t("board.noowner")),
             h("span", { class: "sp" }),
-            v.deadline ? h("span", { class: "due" + (late ? " late" : "") }, (late ? "Overdue " : "Due ") + shortDate(v.deadline)) : null));
+            v.deadline ? h("span", { class: "due" + (late ? " late" : "") }, t(late ? "board.overdue" : "board.due", { d: shortDate(v.deadline) })) : null));
         card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", String(v.id)); card.classList.add("dragging"); });
         card.addEventListener("dragend", () => card.classList.remove("dragging"));
         col.append(card);
       });
-      if (!items.length) col.append(h("div", { class: "empty-col" }, "No videos at this stage"));
+      if (!items.length) col.append(h("div", { class: "empty-col" }, t("board.empty")));
       return col;
     }));
   };
   draw();
-  main.append(pageHead("Board", videos.length ? "Drag a card to another column to move that video to the next stage." : "No videos yet. Add the first one to start.",
-    h("div", { class: "newvideo" }, title, h("button", { class: "btn", onclick: add }, "New video"))), board);
+  main.append(pageHead(t("board.title"), videos.length ? t("board.sub") : t("board.sub.empty"),
+    h("div", { class: "newvideo" }, title, h("button", { class: "btn", onclick: add }, t("board.new")))), board);
 }
 
 // ---------- video / editor ----------
@@ -178,44 +212,80 @@ async function videoView(main, id) {
   let rev = video.rev, dirty = false, saving = false, blocked = false, timer = null;
 
   const banner = h("div", { class: "banner", style: "display:none" });
-  const title = h("input", { type: "text", value: video.title, class: "title-in", "aria-label": "Video title" });
-  const status = h("select", {}, S.statuses.map((s) => h("option", { value: s }, cap(s))));
+  const title = h("input", { type: "text", value: video.title, class: "title-in", "aria-label": t("field.title") });
+  const status = h("select", {}, S.statuses.map((s) => h("option", { value: s }, stageName(s))));
   status.value = video.status;
   const stageDot = h("span", { class: "dot", style: "--c:" + stageColor(video.status) });
-  const owner = h("select", {}, h("option", { value: "" }, "Unassigned"), S.users.map((u) => h("option", { value: u.id }, u.display_name)));
+  const owner = h("select", {}, h("option", { value: "" }, t("unassigned")), S.users.map((u) => h("option", { value: u.id }, u.display_name)));
   owner.value = video.owner_id ?? "";
   const deadline = h("input", { type: "date", value: video.deadline || "" });
-  const patch = (obj) => api("PATCH", "/videos/" + id, obj).then(() => toast("Saved")).catch(fail);
+  const patch = (obj) => api("PATCH", "/videos/" + id, obj).then(() => toast(t("toast.saved"))).catch(fail);
   title.addEventListener("change", () => patch({ title: title.value }));
   status.addEventListener("change", () => { stageDot.style.setProperty("--c", stageColor(status.value)); patch({ status: status.value }); });
   owner.addEventListener("change", () => patch({ owner_id: owner.value ? +owner.value : null }));
   deadline.addEventListener("change", () => patch({ deadline: deadline.value }));
 
-  const script = h("textarea", { id: "script", spellcheck: "true", placeholder: "Write or paste your script here..." });
+  const script = h("textarea", { class: "script", "aria-label": t("script.aria"), spellcheck: "true", placeholder: t("script.ph") });
   script.value = video.content;
   const stat = h("span", { class: "muted" });
-  setTimeout(() => setSave("All changes saved"));
+  setTimeout(() => setSave(t("save.clean")));
   const saveState = h("span", { class: "savestate" });
   const setSave = (txt, cls) => { saveState.textContent = txt; saveState.className = "savestate" + (cls ? " " + cls : ""); };
-  const updateStat = () => { const w = words(script.value); stat.textContent = `${w} words, about ${(w / 150).toFixed(1)} min spoken`; };
+  const wpm = settings.wpm || 150;
+  const updateStat = () => {
+    const w = words(script.value);
+    stat.textContent = t("stat", { w: w.toLocaleString(dateLocale()), m: (w / wpm).toLocaleString(dateLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
+  };
   updateStat();
+
+  // running-order strip
+  const order = h("nav", { class: "order", "aria-label": t("order.title") });
+  function jumpTo(pos) {
+    const probe = script.cloneNode(false);
+    probe.className = "script"; probe.removeAttribute("aria-label");
+    probe.style.cssText = `position:absolute;visibility:hidden;height:0;min-height:0;width:${script.clientWidth}px;left:-9999px`;
+    probe.value = script.value.slice(0, pos); script.parentNode.append(probe);
+    const y = probe.scrollHeight; probe.remove();
+    script.focus({ preventScroll: true }); script.setSelectionRange(pos, pos);
+    script.scrollTop = Math.max(0, y - 80);
+  }
+  function drawOrder() {
+    const secs = parseSections(script.value, wpm);
+    const total = secs.reduce((n, s) => n + s.secs, 0);
+    if (!secs.length) {
+      fill(order, h("h2", {}, t("order.title")), h("p", { class: "muted" }, t("order.hint")));
+      return;
+    }
+    const maxW = Math.max(...secs.map((s) => s.words), 1);
+    fill(order, h("h2", {}, t("order.title")),
+      h("p", { class: "muted order-total" }, t("order.about", { t: fmtSecs(total) })),
+      h("ol", {}, secs.map((s) => {
+        const longHook = OPENING.test(s.label) && s.secs > 30;
+        return h("li", {}, h("button", { class: "ord" + (longHook ? " warn" : ""), style: `--w:${Math.max(6, Math.round((s.words / maxW) * 100))}%`,
+          onclick: () => jumpTo(s.pos), title: longHook ? t("order.longtip") : t("order.jump") },
+          h("span", { class: "ord-name" }, cap(s.label.toLowerCase()).replace(/\bcta\b/g, "CTA")),
+          h("span", { class: "ord-len" }, fmtSecs(s.secs) + (longHook ? t("order.longnote") : "")),
+          h("span", { class: "ord-bar", "aria-hidden": "true" })));
+      })));
+  }
+  drawOrder();
 
   async function save(label) {
     if (blocked || saving) return;
-    saving = true; clearTimeout(timer); setSave("Saving...", "dirty");
+    saving = true; clearTimeout(timer); setSave(t("save.saving"), "dirty");
     try {
       const r = await api("PUT", `/videos/${id}/script`, { content: script.value, base_rev: rev, label: label || "" });
-      rev = r.rev; dirty = false; setSave("Saved " + new Date().toLocaleTimeString());
-      if (label) { toast("Version saved"); loadHistory(); }
+      rev = r.rev; dirty = false; setSave(t("save.saved", { time: new Date().toLocaleTimeString(dateLocale()) }));
+      if (label) { toast(t("toast.versionSaved")); loadHistory(); }
     } catch (e) {
       if (e.status === 409) {
         blocked = true; banner.style.display = ""; banner.textContent = e.message;
-        setSave("Not saved - conflict", "bad");
-      } else { setSave("Save failed", "bad"); fail(e); }
+        setSave(t("save.conflict"), "bad");
+      } else { setSave(t("save.failed"), "bad"); fail(e); }
     } finally { saving = false; }
   }
   script.addEventListener("input", () => {
-    dirty = true; updateStat(); setSave("Unsaved changes", "dirty");
+    dirty = true; updateStat(); drawOrder(); setSave(t("save.dirty"), "dirty");
     clearTimeout(timer); timer = setTimeout(() => save(), 2500);
   });
   const beforeUnload = (e) => { if (dirty || blocked) { e.preventDefault(); e.returnValue = ""; } };
@@ -236,43 +306,40 @@ async function videoView(main, id) {
     for (const [k, b] of Object.entries(tabs)) b.classList.toggle("on", k === name);
     body.replaceChildren({ ai: aiBox, comments: comBox, history: histBox, notes: notesBox }[name]);
   };
-  [["ai", "Write with AI"], ["comments", "Comments"], ["history", "History"], ["notes", "Notes"]].forEach(([k, label]) => {
+  [["ai", t("tab.ai")], ["comments", t("tab.comments")], ["history", t("tab.history")], ["notes", t("tab.notes")]].forEach(([k, label]) => {
     tabs[k] = h("button", { onclick: () => show(k) }, label); tabBar.append(tabs[k]);
   });
   panel.append(tabBar, body);
 
   // AI tab
   const providerOk = settings.providers[settings.provider].has_key;
-  const stageSel = h("select", {}, stages.map((s) => h("option", { value: s.id }, s.label)));
-  const aiInput = h("textarea", { rows: "6", placeholder: "Topic, notes, outline or instruction..." });
+  const stageSel = h("select", {}, stages.map((s) => h("option", { value: s.id }, t("ai." + s.id))));
+  const aiInput = h("textarea", { rows: "6", placeholder: t("ai.ph"), "aria-label": t("ai.ph") });
   const hint = h("p", { class: "muted" });
   const out = h("div", { class: "out", style: "display:none" });
   const outBtns = h("div", { class: "bar", style: "display:none" });
-  const VERBS = { ideas: "Brainstorm angles", research: "Build research brief", outline: "Draft outline", draft: "Write first draft",
-    critique: "Critique script", rewrite: "Rewrite section", package: "Create titles and description", repurpose: "Create Shorts and post" };
-  const verb = () => VERBS[stageSel.value] || "Generate";
-  const runBtn = h("button", { class: "btn" }, "Generate");
+  const verb = () => t("verb." + stageSel.value);
+  const runBtn = h("button", { class: "btn" }, verb());
   const runsBox = h("div");
   let lastText = "";
   const syncStage = () => {
     const st = stages.find((s) => s.id === stageSel.value);
     aiInput.style.display = st.needs === "script" ? "none" : "";
     runBtn.textContent = verb();
-    hint.textContent = st.needs === "script" ? "Uses the whole script in the editor." :
-      st.needs === "both" ? "Describe what to rewrite. The full script is sent as context." : "";
+    hint.textContent = st.needs === "script" ? t("ai.hint.script") : st.needs === "both" ? t("ai.hint.both") : "";
   };
   stageSel.addEventListener("change", syncStage); syncStage();
   const insertText = (txt, where) => {
     if (where === "cursor") { const a = script.selectionStart, b = script.selectionEnd; script.setRangeText(txt, a, b, "end"); }
     else script.value = script.value.replace(/\s*$/, "") + "\n\n" + txt + "\n";
-    script.dispatchEvent(new Event("input")); toast("Inserted into script");
+    script.dispatchEvent(new Event("input")); toast(t("toast.inserted"));
   };
   outBtns.append(
-    h("button", { class: "btn ghost sm", onclick: () => insertText(lastText, "end") }, "Add to end of script"),
-    h("button", { class: "btn ghost sm", onclick: () => insertText(lastText, "cursor") }, "Insert at cursor"),
-    h("button", { class: "btn ghost sm", onclick: () => navigator.clipboard.writeText(lastText).then(() => toast("Copied")) }, "Copy"));
+    h("button", { class: "btn ghost sm", onclick: () => insertText(lastText, "end") }, t("ai.addEnd")),
+    h("button", { class: "btn ghost sm", onclick: () => insertText(lastText, "cursor") }, t("ai.atCursor")),
+    h("button", { class: "btn ghost sm", onclick: () => navigator.clipboard.writeText(lastText).then(() => toast(t("toast.copied"))) }, t("copy")));
   runBtn.addEventListener("click", async () => {
-    runBtn.disabled = true; runBtn.replaceChildren(h("span", { class: "spin" }), "Working on it");
+    runBtn.disabled = true; runBtn.replaceChildren(h("span", { class: "spin" }), t("ai.working"));
     try {
       const r = await api("POST", "/ai", { video_id: id, stage: stageSel.value, input: aiInput.value, script: script.value });
       lastText = r.text; out.textContent = r.text; out.style.display = ""; outBtns.style.display = ""; loadRuns();
@@ -281,31 +348,31 @@ async function videoView(main, id) {
   });
   async function loadRuns() {
     const runs = await api("GET", `/videos/${id}/ai_runs`);
-    fill(runsBox, h("h2", { style: "margin-top:28px" }, "Earlier results"),
+    fill(runsBox, h("h2", { style: "margin-top:28px" }, t("ai.earlier")),
       runs.length ? runs.map((r) => h("details", { class: "item" },
-        h("summary", {}, (stages.find((s) => s.id === r.stage) || { label: r.stage }).label, h("span", {}, r.author + ", " + fmtDate(r.created))),
+        h("summary", {}, t("ai." + r.stage), h("span", {}, r.author + ", " + fmtDate(r.created))),
         h("div", { class: "out" }, r.output),
-        h("button", { class: "btn ghost sm", onclick: () => navigator.clipboard.writeText(r.output).then(() => toast("Copied")) }, "Copy"))) : h("div", { class: "empty" }, "Nothing yet. Choose a task and run it."));
+        h("button", { class: "btn ghost sm", onclick: () => navigator.clipboard.writeText(r.output).then(() => toast(t("toast.copied"))) }, t("copy")))) : h("div", { class: "empty" }, t("ai.none")));
   }
-  aiBox.append(!providerOk && h("p", { class: "err" }, "No API key for " + settings.providers[settings.provider].label + ". An admin can add it under Team and AI."),
-    h("label", {}, "Task"), stageSel, hint, aiInput, h("div", { class: "bar" }, runBtn), out, outBtns, runsBox);
+  aiBox.append(!providerOk && h("p", { class: "err" }, t("ai.nokey", { p: settings.providers[settings.provider].label })),
+    h("label", {}, t("ai.task")), stageSel, hint, aiInput, h("div", { class: "bar" }, runBtn), out, outBtns, runsBox);
   loadRuns().catch(fail);
 
   // Comments tab
-  const comInput = h("textarea", { rows: "3", placeholder: "Write a comment..." });
+  const comInput = h("textarea", { rows: "3", placeholder: t("com.ph"), "aria-label": t("com.ph") });
   async function loadComments() {
     const cs = await api("GET", `/videos/${id}/comments`);
     fill(comList, cs.length ? cs.map((c) => h("div", { class: "item" },
       h("div", { class: "h" }, h("span", { class: "who" }, avatar(c.author), h("strong", {}, c.author)),
         h("span", {}, fmtDate(c.created), " ",
-          (c.user_id === S.user.id || S.user.is_admin) && h("a", { href: "#", onclick: async (e) => { e.preventDefault(); await api("DELETE", "/comments/" + c.id).catch(fail); loadComments(); } }, "Delete"))),
-      h("div", { class: "b" }, c.body))) : h("div", { class: "empty" }, "No comments yet. Leave a note for the team."));
+          (c.user_id === S.user.id || S.user.is_admin) && h("a", { href: "#", onclick: async (e) => { e.preventDefault(); await api("DELETE", "/comments/" + c.id).catch(fail); loadComments(); } }, t("delete")))),
+      h("div", { class: "b" }, c.body))) : h("div", { class: "empty" }, t("com.none")));
   }
   const comList = h("div");
   comBox.append(comList, h("div", { class: "bar" }, h("button", { class: "btn sm", onclick: async () => {
     if (!comInput.value.trim()) return;
     try { await api("POST", `/videos/${id}/comments`, { body: comInput.value }); comInput.value = ""; loadComments(); } catch (e) { fail(e); }
-  } }, "Post")));
+  } }, t("com.post"))));
   comBox.insertBefore(comInput, comBox.lastChild);
   loadComments().catch(fail);
 
@@ -315,79 +382,122 @@ async function videoView(main, id) {
     const vs = await api("GET", `/videos/${id}/versions`);
     fill(histBox, 
       h("div", { class: "bar" }, h("button", { class: "btn ghost sm", onclick: () => {
-        const l = prompt("Name this version (e.g. 'After editor pass')"); if (l) save(l);
-      } }, "Name this version")),
+        const l = prompt(t("hist.prompt")); if (l) save(l);
+      } }, t("hist.name"))),
       vs.length ? vs.map((v) => h("div", { class: "item" },
-        h("div", { class: "h" }, h("strong", {}, v.label || "Autosave"), h("span", {}, fmtDate(v.created))),
-        h("div", { class: "muted" }, "Saved by " + (v.author || "unknown") + ", " + v.size.toLocaleString() + " characters. "),
+        h("div", { class: "h" }, h("strong", {}, v.label || t("hist.auto")), h("span", {}, fmtDate(v.created))),
+        h("div", { class: "muted" }, t("hist.by", { a: v.author || t("unknown"), n: v.size.toLocaleString(dateLocale()) }) + " "),
         h("a", { href: "#", onclick: async (e) => {
           e.preventDefault();
           const full = await api("GET", "/versions/" + v.id).catch(fail); if (!full) return;
           fill(preview, h("div", { class: "out" }, full.content),
             h("div", { class: "bar" }, h("button", { class: "btn sm", onclick: () => {
-              if (confirm("Replace the editor text with this version? Your current text is saved as a version first.")) {
-                save("Before restore").then(() => { script.value = full.content; script.dispatchEvent(new Event("input")); toast("Restored - saving"); });
-              } } }, "Restore this version")));
-        } }, "View"))) : h("div", { class: "empty" }, "No versions yet. One is saved automatically as you write."),
+              if (confirm(t("confirm.restore"))) {
+                save(t("hist.beforeRestore")).then(() => { script.value = full.content; script.dispatchEvent(new Event("input")); toast(t("toast.restored")); });
+              } } }, t("hist.restore"))));
+        } }, t("hist.view")))) : h("div", { class: "empty" }, t("hist.none")),
       preview);
   }
   loadHistory().catch(fail);
 
   // Notes tab
-  const notes = h("textarea", { rows: "12", placeholder: "Sources, links, reminders for the team..." });
+  const notes = h("textarea", { rows: "12", placeholder: t("notes.ph"), "aria-label": t("tab.notes") });
   notes.value = video.notes || "";
   notes.addEventListener("change", () => patch({ notes: notes.value }));
-  notesBox.append(h("p", { class: "muted" }, "Shared scratchpad for this video (not part of the script)."), notes);
+  notesBox.append(h("p", { class: "muted" }, t("notes.help")), notes);
   show("ai");
 
   const del = h("button", { class: "btn ghost sm", onclick: async () => {
-    if (!confirm("Delete this video, its script, history and comments? This cannot be undone.")) return;
+    if (!confirm(t("confirm.delvideo"))) return;
     dirty = false; blocked = false; clearTimeout(timer);
     try { await api("DELETE", "/videos/" + id); location.hash = "#/"; } catch (e) { fail(e); }
-  } }, "Delete video");
+  } }, t("btn.delete"));
 
   main.append(banner,
-    h("a", { class: "crumb", href: "#/" }, "Back to board"),
+    h("a", { class: "crumb", href: "#/" }, t("back")),
     title,
     h("div", { class: "props" },
-      h("div", { class: "stage-pick" }, h("label", {}, "Stage"), h("div", { class: "sel" }, stageDot, status)),
-      h("div", {}, h("label", {}, "Owner"), owner),
-      h("div", {}, h("label", {}, "Deadline"), deadline)),
+      h("div", { class: "stage-pick" }, h("label", {}, t("field.stage")), h("div", { class: "sel" }, stageDot, status)),
+      h("div", {}, h("label", {}, t("field.owner")), owner),
+      h("div", {}, h("label", {}, t("field.deadline")), deadline)),
     h("div", { class: "editor-wrap" },
       h("div", { class: "paper" }, script,
         h("div", { class: "foot" }, stat, h("span", { class: "sp" }), saveState,
-          h("button", { class: "btn sm", onclick: () => save() }, "Save now"), del)),
-      panel));
+          h("button", { class: "btn sm", onclick: () => save() }, t("btn.savenow")), del)),
+      order, panel));
+}
+
+// ---------- calendar ----------
+async function calendarView(main) {
+  const videos = await api("GET", "/videos");
+  const now = new Date();
+  let year = now.getFullYear(), month = now.getMonth();
+  const grid = h("div", { class: "cal", role: "grid" });
+  const label = h("h2", { class: "cal-title", "aria-live": "polite" });
+  const undated = h("div");
+  const iso = (y, m, d) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  const draw = () => {
+    label.textContent = new Date(year, month, 1).toLocaleDateString(dateLocale(), { month: "long", year: "numeric" });
+    const lead = (new Date(year, month, 1).getDay() + 6) % 7; // Monday first
+    const days = new Date(year, month + 1, 0).getDate();
+    const cells = [0, 1, 2, 3, 4, 5, 6].map((i) => h("div", { class: "cal-dow", role: "columnheader" }, new Date(2024, 0, 1 + i).toLocaleDateString(dateLocale(), { weekday: "short" })));
+    for (let i = 0; i < lead; i++) cells.push(h("div", { class: "cal-cell blank" }));
+    for (let d = 1; d <= days; d++) {
+      const key = iso(year, month, d);
+      const due = videos.filter((v) => v.deadline === key);
+      cells.push(h("div", { class: "cal-cell" + (key === todayStr() ? " today" : ""), role: "gridcell" },
+        h("span", { class: "cal-day" }, d),
+        due.map((v) => {
+          const done = v.status === "published", late = key < todayStr() && !done;
+          return h("a", { class: "cal-item" + (late ? " late" : done ? " done" : ""), href: "#/video/" + v.id, style: "--c:" + stageColor(v.status),
+            title: `${v.title} (${stageName(v.status)}${late ? t("cal.late") : ""})` }, v.title);
+        })));
+    }
+    while ((cells.length - 7) % 7) cells.push(h("div", { class: "cal-cell blank" }));
+    fill(grid, cells);
+  };
+  const go = (delta) => { month += delta; if (month < 0) { month = 11; year--; } if (month > 11) { month = 0; year++; } draw(); };
+  const nodate = videos.filter((v) => !v.deadline);
+  fill(undated, nodate.length && [h("h2", {}, t("cal.nodl")),
+    h("p", { class: "muted" }, t("cal.nodl.help")),
+    h("ul", { class: "plain" }, nodate.map((v) => h("li", {}, h("a", { href: "#/video/" + v.id }, v.title), h("span", { class: "muted" }, " " + stageName(v.status)))))]);
+  draw();
+  main.append(pageHead(t("cal.title"), t("cal.sub")),
+    h("div", { class: "cal-bar" }, label, h("span", { class: "sp" }),
+      h("button", { class: "btn ghost sm", onclick: () => go(-1) }, t("cal.prev")),
+      h("button", { class: "btn ghost sm", onclick: () => { year = now.getFullYear(); month = now.getMonth(); draw(); } }, t("cal.today")),
+      h("button", { class: "btn ghost sm", onclick: () => go(1) }, t("cal.next"))),
+    grid, undated);
 }
 
 // ---------- library ----------
 async function libraryView(main) {
   const lib = await api("GET", "/library");
-  const guide = h("textarea", { rows: "16" }); guide.value = lib.style_guide;
-  const tmpl = h("textarea", { rows: "12" }); tmpl.value = lib.script_template;
-  const saveLib = (key, el) => api("PUT", "/library", { [key]: el.value }).then(() => toast("Saved")).catch(fail);
-  const exTitle = h("input", { type: "text", placeholder: "Title of a script you are proud of" });
-  const exBody = h("textarea", { rows: "8", placeholder: "Paste the full script text here" });
+  const guide = h("textarea", { rows: "16", "aria-label": t("lib.style") }); guide.value = lib.style_guide;
+  const tmpl = h("textarea", { rows: "12", "aria-label": t("lib.tmpl") }); tmpl.value = lib.script_template;
+  const saveLib = (key, el) => api("PUT", "/library", { [key]: el.value }).then(() => toast(t("toast.saved"))).catch(fail);
+  const exTitle = h("input", { type: "text", placeholder: t("lib.ex.titleph"), "aria-label": t("lib.ex.titleph") });
+  const exBody = h("textarea", { rows: "8", placeholder: t("lib.ex.bodyph"), "aria-label": t("lib.ex.bodyph") });
   const list = h("div");
   const drawEx = (items) => fill(list, items.length ? items.map((x) => h("div", { class: "item" },
-    h("div", { class: "h" }, h("strong", {}, x.title), h("span", {}, x.size.toLocaleString() + " characters ",
-      h("a", { href: "#", onclick: async (e) => { e.preventDefault(); if (confirm("Remove this example?")) { await api("DELETE", "/examples/" + x.id).catch(fail); render(); } } }, "Remove"))))) :
-    h("div", { class: "empty" }, "No examples yet. Add 3 to 5 of your best scripts. The AI learns your voice from them."));
+    h("div", { class: "h" }, h("strong", {}, x.title), h("span", {}, t("lib.chars", { n: x.size.toLocaleString(dateLocale()) }) + " ",
+      h("a", { href: "#", onclick: async (e) => { e.preventDefault(); if (confirm(t("confirm.rmex"))) { await api("DELETE", "/examples/" + x.id).catch(fail); render(); } } }, t("remove")))))) :
+    h("div", { class: "empty" }, t("lib.ex.none")));
   drawEx(lib.examples);
-  main.append(pageHead("Library", "Everything here is sent to the AI as context with every request. The better this is, the more the drafts sound like you."),
+  main.append(pageHead(t("lib.title"), t("lib.sub")),
     h("div", { class: "grid2" },
       h("div", { class: "stack" },
-        h("div", { class: "card" }, h("h2", {}, "Style guide"),
-          h("p", { class: "muted" }, "Voice, tone, pacing, hook patterns, phrases to use and to avoid."), guide,
-          h("div", { class: "bar" }, h("button", { class: "btn", onclick: () => saveLib("style_guide", guide) }, "Save style guide"))),
-        h("div", { class: "card" }, h("h2", {}, "Script template"),
-          h("p", { class: "muted" }, "Pre-filled into every new video."), tmpl,
-          h("div", { class: "bar" }, h("button", { class: "btn", onclick: () => saveLib("script_template", tmpl) }, "Save template")))),
-      h("div", { class: "card" }, h("h2", {}, "Example scripts"), list,
-        h("label", {}, "Add an example"), exTitle, exBody,
+        h("div", { class: "card" }, h("h2", {}, t("lib.style")),
+          h("p", { class: "muted" }, t("lib.style.help")), guide,
+          h("div", { class: "bar" }, h("button", { class: "btn", onclick: () => saveLib("style_guide", guide) }, t("lib.savestyle")))),
+        h("div", { class: "card" }, h("h2", {}, t("lib.tmpl")),
+          h("p", { class: "muted" }, t("lib.tmpl.help")), tmpl,
+          h("div", { class: "bar" }, h("button", { class: "btn", onclick: () => saveLib("script_template", tmpl) }, t("lib.savetmpl"))))),
+      h("div", { class: "card" }, h("h2", {}, t("lib.ex")), list,
+        h("label", {}, t("lib.addex.label")), exTitle, exBody,
         h("div", { class: "bar" }, h("button", { class: "btn", onclick: async () => {
           try { await api("POST", "/examples", { title: exTitle.value, body: exBody.value }); render(); } catch (e) { fail(e); }
-        } }, "Add example")))));
+        } }, t("lib.addex"))))));
 }
 
 // ---------- team & AI settings ----------
@@ -396,44 +506,46 @@ async function settingsView(main) {
   const admin = S.user.is_admin;
   const provider = h("select", { disabled: !admin }, Object.entries(set.providers).map(([k, v]) => h("option", { value: k }, v.label)));
   provider.value = set.provider;
-  const model = h("input", { type: "text", value: set.model, disabled: !admin, placeholder: "leave blank for the default" });
+  const model = h("input", { type: "text", value: set.model, disabled: !admin, placeholder: t("set.model.ph"), "aria-label": t("set.model") });
   const limit = h("input", { type: "number", min: "0", max: "20", value: set.example_limit, disabled: !admin });
+  const wpmIn = h("input", { type: "number", min: "60", max: "300", value: set.wpm, disabled: !admin });
   const keys = {};
   const keyRows = Object.entries(set.providers).map(([k, v]) => {
-    keys[k] = h("input", { type: "password", autocomplete: "off", disabled: !admin, placeholder: v.has_key ? "A key is set (type to replace)" : "Paste API key" });
-    return [h("label", {}, v.label + " API key"), keys[k]];
+    keys[k] = h("input", { type: "password", autocomplete: "off", disabled: !admin, placeholder: v.has_key ? t("set.key.set") : t("set.key.paste"), "aria-label": t("set.key", { p: v.label }) });
+    return [h("label", {}, t("set.key", { p: v.label })), keys[k]];
   });
   const defaultHint = h("p", { class: "muted" });
-  const syncHint = () => { defaultHint.textContent = "Default model: " + set.providers[provider.value].default_model; };
+  const syncHint = () => { defaultHint.textContent = t("set.model.default", { m: set.providers[provider.value].default_model }); };
   provider.addEventListener("change", syncHint); syncHint();
 
-  const nu = { name: h("input", { type: "text", placeholder: "Display name" }), user: h("input", { type: "text", placeholder: "username" }),
-    pw: h("input", { type: "password", placeholder: "temporary password (8+)", autocomplete: "new-password" }) };
-  const cur = h("input", { type: "password", placeholder: "Current password", autocomplete: "current-password" });
-  const np = h("input", { type: "password", placeholder: "New password (8+)", autocomplete: "new-password" });
+  const nu = { name: h("input", { type: "text", placeholder: t("ph.dispname"), "aria-label": t("ph.dispname") }), user: h("input", { type: "text", placeholder: t("ph.username"), "aria-label": t("field.username") }),
+    pw: h("input", { type: "password", placeholder: t("ph.tmppw"), "aria-label": t("ph.tmppw"), autocomplete: "new-password" }) };
+  const cur = h("input", { type: "password", placeholder: t("pw.cur"), "aria-label": t("pw.cur"), autocomplete: "current-password" });
+  const np = h("input", { type: "password", placeholder: t("pw.new"), "aria-label": t("pw.new"), autocomplete: "new-password" });
 
-  main.append(pageHead("Team and AI", "Add your teammates and choose which AI writes with you."), h("div", { class: "grid2" },
-    h("div", { class: "card" }, h("h2", {}, "AI settings"),
-      !admin && h("p", { class: "muted" }, "Only an admin can change these."),
-      h("label", {}, "Provider"), provider, h("label", {}, "Model"), model, defaultHint,
-      keyRows, h("label", {}, "How many example scripts to include with each request"), limit,
-      h("p", { class: "muted" }, "Keys are stored in the local database file. You can also set ANTHROPIC_API_KEY / OPENAI_API_KEY as environment variables instead."),
+  main.append(pageHead(t("set.title"), t("set.sub")), h("div", { class: "grid2" },
+    h("div", { class: "card" }, h("h2", {}, t("set.ai")),
+      !admin && h("p", { class: "muted" }, t("set.adminonly")),
+      h("label", {}, t("set.provider")), provider, h("label", {}, t("set.model")), model, defaultHint,
+      keyRows, h("label", {}, t("set.limit")), limit,
+      h("label", {}, t("set.wpm")), wpmIn, h("p", { class: "muted" }, t("set.wpm.help")),
+      h("p", { class: "muted" }, t("set.keys.note")),
       admin && h("div", { class: "bar" }, h("button", { class: "btn", onclick: async () => {
         const api_keys = {}; for (const [k, el] of Object.entries(keys)) if (el.value.trim()) api_keys[k] = el.value;
-        try { await api("PUT", "/settings", { provider: provider.value, model: model.value, example_limit: +limit.value, api_keys }); toast("Saved"); render(); } catch (e) { fail(e); }
-      } }, "Save AI settings"))),
+        try { await api("PUT", "/settings", { provider: provider.value, model: model.value, example_limit: +limit.value, wpm: +wpmIn.value, api_keys }); toast(t("toast.saved")); render(); } catch (e) { fail(e); }
+      } }, t("set.save")))),
     h("div", { class: "stack" },
-      h("div", { class: "card" }, h("h2", {}, "Team"),
-        h("table", {}, S.users.map((u) => h("tr", {}, h("td", {}, h("span", { class: "who", style: "display:flex;align-items:center;gap:10px" }, avatar(u.display_name), u.display_name)), h("td", { class: "muted" }, u.username), h("td", { class: "muted" }, u.is_admin ? "Admin" : "Member"),
-          h("td", {}, admin && u.id !== S.user.id && h("a", { href: "#", onclick: async (e) => { e.preventDefault(); if (confirm("Remove " + u.display_name + "?")) { await api("DELETE", "/users/" + u.id).catch(fail); render(); } } }, "Remove"))))),
-        admin && [h("label", {}, "Add a teammate"), nu.name, h("div", { style: "height:6px" }), nu.user, h("div", { style: "height:6px" }), nu.pw,
+      h("div", { class: "card" }, h("h2", {}, t("team")),
+        h("table", {}, S.users.map((u) => h("tr", {}, h("td", {}, h("span", { class: "who", style: "display:flex;align-items:center;gap:10px" }, avatar(u.display_name), u.display_name)), h("td", { class: "muted" }, u.username), h("td", { class: "muted" }, u.is_admin ? t("role.admin") : t("role.member")),
+          h("td", {}, admin && u.id !== S.user.id && h("a", { href: "#", onclick: async (e) => { e.preventDefault(); if (confirm(t("confirm.rmuser", { n: u.display_name }))) { await api("DELETE", "/users/" + u.id).catch(fail); render(); } } }, t("remove")))))),
+        admin && [h("label", {}, t("team.add")), nu.name, h("div", { style: "height:6px" }), nu.user, h("div", { style: "height:6px" }), nu.pw,
           h("div", { class: "bar" }, h("button", { class: "btn", onclick: async () => {
-            try { await api("POST", "/users", { display_name: nu.name.value, username: nu.user.value, password: nu.pw.value }); toast("Teammate added"); render(); } catch (e) { fail(e); }
-          } }, "Add teammate"))]),
-      h("div", { class: "card" }, h("h2", {}, "Change my password"), cur, h("div", { style: "height:6px" }), np,
+            try { await api("POST", "/users", { display_name: nu.name.value, username: nu.user.value, password: nu.pw.value }); toast(t("toast.added")); render(); } catch (e) { fail(e); }
+          } }, t("team.addbtn")))]),
+      h("div", { class: "card" }, h("h2", {}, t("pw.title")), cur, h("div", { style: "height:6px" }), np,
         h("div", { class: "bar" }, h("button", { class: "btn", onclick: async () => {
-          try { await api("POST", "/password", { current: cur.value, new: np.value }); cur.value = np.value = ""; toast("Password changed"); } catch (e) { fail(e); }
-        } }, "Change password"))))));
+          try { await api("POST", "/password", { current: cur.value, new: np.value }); cur.value = np.value = ""; toast(t("toast.pwchanged")); } catch (e) { fail(e); }
+        } }, t("pw.btn")))))));
 }
 
 render();

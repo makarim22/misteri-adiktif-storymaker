@@ -20,95 +20,98 @@ PROVIDERS = {
     },
 }
 
-BASE_RULES = """You are the writing partner for a YouTube storytelling channel.
-Rules:
-- Follow the channel style guide below exactly. Match the voice of the example scripts.
-- NEVER invent facts, names, dates, quotes or numbers. If a detail is not in the
-  material you were given, either leave it out or mark it with [VERIFY].
-- Mark every claim that needs a source check with [VERIFY].
-- Write for the ear: spoken language, short sentences, clear rhythm.
-- Put visual ideas in [VISUAL: ...] notes, not in the spoken text.
+# All prompts are in Indonesian and ask for Bahasa Indonesia output. Edit the text below to change
+# tone or rules without touching the rest of the app.
+BASE_RULES = """Kamu adalah rekan penulis untuk channel YouTube bergaya bercerita (storytelling).
+Aturan:
+- Tulis dalam Bahasa Indonesia yang baku dan enak didengar. Jangan pakai bahasa gaul (gue/lo).
+- Untuk sapaan (aku/kamu atau saya/Anda) dan nada, ikuti panduan gaya dan contoh naskah di bawah.
+  Jika tidak jelas, pilih satu dan pakai konsisten. Jangan mencampur dua gaya sapaan.
+- Ikuti panduan gaya channel di bawah dengan tepat. Tiru suara contoh naskah.
+- JANGAN mengarang fakta, nama, tanggal, kutipan, atau angka. Jika sebuah detail tidak ada
+  di materi yang diberikan, hilangkan atau tandai dengan [VERIFY].
+- Tandai setiap klaim yang perlu dicek sumbernya dengan [VERIFY].
+- Tulis untuk didengar: bahasa lisan, kalimat pendek, ritme jelas.
+- Taruh ide visual dalam catatan [VISUAL: ...], bukan di teks yang dibacakan.
+- Jika diminta judul atau deskripsi, tulis dalam Bahasa Indonesia juga.
 """
 
-# Each stage: label, instruction template. {input} is what the user typed,
-# {script} is the current script text in the editor.
+# Each stage: label (English; the app translates it), instruction template.
+# {input} is what the user typed, {script} is the current script text in the editor.
 STAGES = {
     "ideas": {
         "label": "Brainstorm story angles",
         "needs": "input",
         "prompt": (
-            "Brainstorm 10 story angles for a video about the topic below. For each: "
-            "a working title, a one-line hook, and why a viewer would keep watching. "
-            "Prefer angles with a clear tension or turning point.\n\nTOPIC / NOTES:\n{input}"
+            "Cari 10 sudut cerita untuk video dengan topik di bawah. Untuk tiap sudut tulis: "
+            "judul kerja, satu kalimat pembuka (hook), dan alasan penonton akan terus menonton. "
+            "Utamakan sudut yang punya ketegangan atau titik balik yang jelas.\n\nTOPIK / CATATAN:\n{input}"
         ),
     },
     "research": {
         "label": "Research brief",
         "needs": "input",
         "prompt": (
-            "Turn the raw notes below into a structured research brief: timeline, key "
-            "people/characters, central conflict, turning points, open questions, and a "
-            "list of claims that must be fact-checked. Use only the notes; do not add facts.\n\n"
-            "RAW NOTES:\n{input}"
+            "Ubah catatan mentah di bawah menjadi ringkasan riset terstruktur: lini masa, tokoh utama, "
+            "konflik inti, titik balik, pertanyaan yang belum terjawab, dan daftar klaim yang harus "
+            "dicek faktanya. Pakai hanya isi catatan; jangan menambah fakta.\n\nCATATAN MENTAH:\n{input}"
         ),
     },
     "outline": {
         "label": "Beat-by-beat outline",
         "needs": "input",
         "prompt": (
-            "Write a beat-by-beat outline from the material below using this structure: "
-            "Hook, Setup, Rising tension (several beats), Turning point, Payoff, Outro. "
-            "For each beat give 1-2 sentences and the emotion it should create. Note where "
-            "visuals could go.\n\nMATERIAL:\n{input}"
+            "Susun kerangka per bagian dari materi di bawah dengan struktur ini, memakai judul bagian "
+            "berhuruf kapital: PEMBUKA, LATAR, KETEGANGAN (beberapa bagian), TITIK BALIK, PENUTUP. "
+            "Untuk tiap bagian tulis 1-2 kalimat dan emosi yang ingin dibangun. Catat di mana visual bisa dipakai."
+            "\n\nMATERI:\n{input}"
         ),
     },
     "draft": {
         "label": "First-draft script",
         "needs": "input",
         "prompt": (
-            "Write a full first-draft narration script from the outline/material below, in "
-            "the channel voice. Open with a strong hook. End with the outro. Mark unverified "
-            "details with [VERIFY]. Add [VISUAL: ...] notes where useful.\n\n"
-            "OUTLINE / MATERIAL:\n{input}"
+            "Tulis draf pertama naskah narasi lengkap dari kerangka atau materi di bawah, dengan suara channel. "
+            "Pakai judul bagian berhuruf kapital (PEMBUKA, LATAR, KETEGANGAN, TITIK BALIK, PENUTUP) di baris sendiri. "
+            "Buka dengan pembuka yang kuat dan akhiri dengan penutup. Tandai detail yang belum terverifikasi "
+            "dengan [VERIFY]. Tambahkan catatan [VISUAL: ...] bila berguna.\n\nKERANGKA / MATERI:\n{input}"
         ),
     },
     "critique": {
         "label": "Critique this script",
         "needs": "script",
         "prompt": (
-            "Critique the script below as a tough editor. Report: (1) where a viewer is most "
-            "likely to drop off and why, (2) weak or slow transitions, (3) places where it "
-            "drifts from the style guide, (4) unsupported claims, (5) the 3 highest-impact "
-            "fixes. Quote the exact lines you refer to. Do not rewrite the whole script.\n\n"
-            "SCRIPT:\n{script}"
+            "Kritik naskah di bawah sebagai editor yang tegas. Laporkan: (1) bagian tempat penonton paling mungkin "
+            "berhenti menonton dan alasannya, (2) transisi yang lemah atau lambat, (3) bagian yang menyimpang dari "
+            "panduan gaya, (4) klaim tanpa dukungan, (5) tiga perbaikan paling berdampak. Kutip baris yang kamu "
+            "maksud. Jangan menulis ulang seluruh naskah.\n\nNASKAH:\n{script}"
         ),
     },
     "rewrite": {
         "label": "Rewrite a section",
         "needs": "both",
         "prompt": (
-            "Rewrite the part of the script described in the instruction, keeping facts "
-            "unchanged and matching the channel voice. Return only the rewritten text.\n\n"
-            "INSTRUCTION / SECTION:\n{input}\n\nFULL SCRIPT FOR CONTEXT:\n{script}"
+            "Tulis ulang bagian naskah yang dijelaskan dalam instruksi, tanpa mengubah fakta dan sesuai suara "
+            "channel. Kembalikan hanya teks hasil tulis ulang.\n\nINSTRUKSI / BAGIAN:\n{input}\n\n"
+            "NASKAH LENGKAP SEBAGAI KONTEKS:\n{script}"
         ),
     },
     "package": {
         "label": "Titles, thumbnails, description",
         "needs": "script",
         "prompt": (
-            "From the finished script below, produce: 10 title options (under 70 characters, "
-            "honest, curiosity-driven), 5 thumbnail concepts (visual + max 4 words of text), "
-            "a YouTube description (first 2 lines work as the hook), chapters with timestamps "
-            "placeholders, and 15 tags.\n\nSCRIPT:\n{script}"
+            "Dari naskah final di bawah, buat: 10 pilihan judul (di bawah 70 karakter, jujur, memancing rasa "
+            "penasaran), 5 konsep thumbnail (visual + maksimal 4 kata teks), deskripsi YouTube (dua baris pertama "
+            "berfungsi sebagai hook), bab dengan placeholder stempel waktu, dan 15 tag.\n\nNASKAH:\n{script}"
         ),
     },
     "repurpose": {
         "label": "Shorts + community post",
         "needs": "script",
         "prompt": (
-            "From the script below write: 3 YouTube Shorts scripts (under 45 seconds each, "
-            "strong first line), and 1 community-tab post that teases the story without "
-            "spoiling the payoff.\n\nSCRIPT:\n{script}"
+            "Dari naskah di bawah, tulis: 3 naskah YouTube Shorts (masing-masing di bawah 45 detik, kalimat "
+            "pertama harus kuat) dan 1 postingan tab komunitas yang memancing penasaran tanpa membocorkan "
+            "akhir cerita.\n\nNASKAH:\n{script}"
         ),
     },
 }
@@ -120,9 +123,9 @@ class AIError(Exception):
 
 def build_system(style_guide, examples):
     parts = [BASE_RULES]
-    parts.append("=== CHANNEL STYLE GUIDE ===\n" + (style_guide.strip() or "(not written yet)"))
+    parts.append("=== PANDUAN GAYA CHANNEL ===\n" + (style_guide.strip() or "(belum ditulis)"))
     if examples:
-        parts.append("=== EXAMPLE SCRIPTS (match this voice) ===")
+        parts.append("=== CONTOH NASKAH (tiru suara ini) ===")
         for ex in examples:
             parts.append(f"--- {ex['title']} ---\n{ex['body']}")
     return "\n\n".join(parts)
