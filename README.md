@@ -92,6 +92,13 @@ detection on save.
   fake server (set `ANTHROPIC_BASE_URL` to point at one). The first real call may reveal differences.
 - OpenAI keeps a free-text model field. No OpenAI prices are built in, so its costs show as unknown.
 
+## User guide
+
+`PANDUAN.md` is the step-by-step guide for new users (Indonesian only). The app shows the same file under
+**Panduan** in the top bar, so there is one source. In the app, `[ALAMAT-APLIKASI]` is replaced by the address
+the browser is using; on GitHub it stays as the placeholder. Button names in the guide are copied from the
+Indonesian interface, so update the guide when a label in `static/i18n.js` changes.
+
 ## Run
 
     cd /home/jaka/story-studio

@@ -119,7 +119,7 @@ async function render() {
   app.append(
     h("header", { class: "top" },
       h("a", { class: "wordmark", href: "#/" }, "Story Studio"),
-      h("nav", { class: "nav" }, nav("/", t("nav.board")), nav("/calendar", t("nav.calendar")), nav("/library", t("nav.library")), nav("/settings", t("nav.settings"))),
+      h("nav", { class: "nav" }, nav("/", t("nav.board")), nav("/calendar", t("nav.calendar")), nav("/library", t("nav.library")), nav("/settings", t("nav.settings")), nav("/panduan", t("nav.guide"))),
       h("div", { class: "sp" }),
       prefsBar(),
       h("div", { class: "me" }, avatar(S.user.display_name), h("span", { class: "nm" }, S.user.display_name),
@@ -132,6 +132,7 @@ async function render() {
     else if (route === "/calendar") await calendarView(main);
     else if (route === "/library") await libraryView(main);
     else if (route === "/settings") await settingsView(main);
+    else if (route === "/panduan") await guideView(main);
     else await boardView(main);
   } catch (e) { fail(e); main.append(h("p", { class: "err" }, e.message)); }
 }
@@ -575,6 +576,69 @@ async function calendarView(main) {
       h("button", { class: "btn ghost sm", onclick: () => { year = now.getFullYear(); month = now.getMonth(); draw(); } }, t("cal.today")),
       h("button", { class: "btn ghost sm", onclick: () => go(1) }, t("cal.next"))),
     grid, undated);
+}
+
+// ---------- user guide (rendered from PANDUAN.md, Indonesian only) ----------
+// Supports the small Markdown subset the guide uses: # ## ### headings, paragraphs, "-" and "1." lists,
+// **bold** and `code`. Everything is built with DOM nodes (never innerHTML).
+function inlineMd(text) {
+  const out = []; const re = /\*\*(.+?)\*\*|`([^`]+)`/g; let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push(m[1] !== undefined ? h("strong", {}, m[1]) : h("code", {}, m[2]));
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+function renderGuide(md) {
+  const origin = location.origin;
+  const lines = md.replace("[ALAMAT-APLIKASI]", origin).split("\n");
+  const body = [], toc = []; let list = null, para = [], title = "", n = 0;
+  const flushPara = () => { if (para.length) { body.push(h("p", {}, inlineMd(para.join(" ")))); para = []; } };
+  const flushList = () => { list = null; };
+  for (const raw of lines) {
+    const line = raw.trimEnd(); let m;
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    if ((m = /^(#{1,3})\s+(.*)$/.exec(line))) {
+      flushPara(); flushList();
+      if (m[1] === "#") { title = m[2]; continue; }
+      const id = "g" + n++;
+      const hd = h(m[1] === "##" ? "h2" : "h3", { id, class: "g-h" }, m[2]);
+      if (m[1] === "##") toc.push([id, m[2]]);
+      body.push(hd); continue;
+    }
+    if ((m = /^(\d+)\.\s+(.*)$/.exec(line)) || (m = /^-\s+(.*)$/.exec(line))) {
+      flushPara();
+      const ordered = /^\d/.test(line);
+      if (!list || list.tag !== (ordered ? "ol" : "ul")) { list = { tag: ordered ? "ol" : "ul", el: h(ordered ? "ol" : "ul") }; body.push(list.el); }
+      list.el.append(h("li", {}, inlineMd(m[m.length - 1])));
+      continue;
+    }
+    if (/^\s+-\s+/.test(line) && list) { // nested bullet under the previous item
+      const li = list.el.lastChild; let sub = li.querySelector("ul");
+      if (!sub) { sub = h("ul"); li.append(sub); }
+      sub.append(h("li", {}, inlineMd(line.replace(/^\s+-\s+/, "")))); continue;
+    }
+    flushList(); para.push(line.trim());
+  }
+  flushPara();
+  return { title, toc, body };
+}
+async function guideView(main) {
+  let md;
+  try {
+    const r = await fetch("/panduan.md");
+    if (!r.ok) throw new Error(String(r.status));
+    md = await r.text();
+  } catch (e) { main.append(pageHead(t("nav.guide"), null), h("p", { class: "err" }, t("guide.err"))); return; }
+  const g = renderGuide(md);
+  const go = (id) => document.getElementById(id).scrollIntoView({ block: "start" });
+  main.append(pageHead(g.title || t("nav.guide"), t("guide.sub")),
+    h("div", { class: "guide" },
+      h("nav", { class: "g-toc", "aria-label": t("guide.toc") }, h("h2", {}, t("guide.toc")),
+        h("ol", {}, g.toc.map(([id, text]) => h("li", {}, h("button", { class: "linkbtn", onclick: () => go(id) }, text))))),
+      h("article", { class: "g-body" }, g.body)));
 }
 
 // ---------- library ----------

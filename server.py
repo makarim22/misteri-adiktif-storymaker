@@ -382,8 +382,13 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self, path):
         if path in ("/", ""):
             path = "/index.html"
-        target = (STATIC / path.lstrip("/")).resolve()
-        if STATIC.resolve() not in target.parents or not target.is_file():
+        if path == "/panduan.md":  # the user guide lives at the repo root so GitHub shows it; one source for both
+            target = ROOT / "PANDUAN.md"
+        else:
+            target = (STATIC / path.lstrip("/")).resolve()
+            if STATIC.resolve() not in target.parents:
+                raise HttpError(404, "Not found")
+        if not target.is_file():
             raise HttpError(404, "Not found")
         data = target.read_bytes()
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"

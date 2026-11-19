@@ -4,7 +4,8 @@
 
 const DICT = {
   id: {
-    "nav.board": "Papan", "nav.calendar": "Kalender", "nav.library": "Pustaka", "nav.settings": "Tim dan AI",
+    "nav.board": "Papan", "nav.calendar": "Kalender", "nav.library": "Pustaka", "nav.settings": "Tim dan AI", "nav.guide": "Panduan",
+    "guide.sub": "Cara memakai aplikasi, dari masuk sampai menulis dengan AI.", "guide.toc": "Isi panduan", "guide.err": "Panduan tidak dapat dimuat. Muat ulang halaman, atau hubungi admin.",
     "signout": "Keluar", "pref.lang": "Bahasa", "pref.theme": "Tema",
     "theme.light": "Terang", "theme.dark": "Gelap", "theme.system": "Sistem",
     "stage.idea": "Ide", "stage.research": "Riset", "stage.outline": "Kerangka", "stage.script": "Naskah",
@@ -117,7 +118,8 @@ const DICT = {
     "mod.save": "Simpan model dan anggaran",
   },
   en: {
-    "nav.board": "Board", "nav.calendar": "Calendar", "nav.library": "Library", "nav.settings": "Team and AI",
+    "nav.board": "Board", "nav.calendar": "Calendar", "nav.library": "Library", "nav.settings": "Team and AI", "nav.guide": "Guide",
+    "guide.sub": "How to use the app, from signing in to writing with AI. The guide is in Indonesian only.", "guide.toc": "Contents", "guide.err": "The guide could not be loaded. Reload the page or contact an admin.",
     "signout": "Sign out", "pref.lang": "Language", "pref.theme": "Theme",
     "theme.light": "Light", "theme.dark": "Dark", "theme.system": "System",
     "stage.idea": "Idea", "stage.research": "Research", "stage.outline": "Outline", "stage.script": "Script",
