@@ -18,7 +18,7 @@ assistant that knows your channel's voice.
 | Language | Indonesian (default) and English | Dictionaries in `static/i18n.js`, switch in the top bar |
 | Theme | Light, Dark or System | CSS variables, `data-theme` attribute, stored per browser |
 | Fonts | Newsreader and Instrument Sans | Self-hosted WOFF2 files, SIL Open Font License 1.1 |
-| AI | Claude (Anthropic) or OpenAI over HTTPS | Called with `urllib`, no SDK; switchable in Settings |
+| AI | Claude (Anthropic) or OpenAI over HTTPS | Called with `urllib`, no SDK; switchable in Settings. Claude calls use prompt caching |
 
 **Python dependencies:** none. Everything comes from the standard library.
 
@@ -64,6 +64,34 @@ detection on save.
 - The `avoid-ai-writing` OpenCode skill is built around English wording, so it will not catch
   Indonesian AI-sounding phrasing.
 
+## Choosing models, cost and budget (Claude)
+
+- **Model picker.** Each AI run can use a different Claude model. Under **Tim dan AI** pick a preset
+  (Hemat / Seimbang / Kualitas terbaik) that assigns a model to each task, adjust any task by hand, or
+  override a single run from the **Model** dropdown in the AI tab.
+- **Cost before and after.** The dropdown shows an estimated cost per model. After a run the real cost
+  is shown, computed from the token counts the API returns, and logged per run.
+- **Prompt caching.** The system prompt (rules, style guide, example scripts) is the same on every call,
+  so it is marked for caching (5-minute lifetime). A cache hit bills that part at a small fraction of the
+  normal input price; the first call after the cache expires pays about 25% extra to write it. Prompts
+  under the model's minimum size (512 tokens on current models) are not cached. Changing the style guide
+  or examples starts a new cache.
+- **Compare.** The AI tab can run one task on two models and show both results side by side with their
+  costs. It costs about double for that one run.
+- **Budget.** An optional monthly budget (USD) shows spent versus budget, warns at 80% and asks for
+  confirmation after 100%. It only counts spending made through this app, so also set a limit in the
+  Anthropic console. Rupiah is shown if an admin enters an exchange rate (typed by hand, no live lookup).
+- **Prices are hard-coded** in `ai.py` (`CLAUDE_MODELS`, with the date they were checked) and are not
+  fetched live. Update them when Anthropic changes prices.
+- **Estimates are approximate.** Tokens per character for Indonesian and typical output length are rough
+  guesses until the app has a few of your own runs to average. Newer models also think before answering,
+  and those tokens are billed as output.
+- **Model quality is not measured here.** The tiers come from price and Anthropic's descriptions. Use
+  Compare on a real task to judge whether a cheaper model is good enough.
+- **Not yet tested against the real API.** The request format and cost math were checked against a local
+  fake server (set `ANTHROPIC_BASE_URL` to point at one). The first real call may reveal differences.
+- OpenAI keeps a free-text model field. No OpenAI prices are built in, so its costs show as unknown.
+
 ## Run
 
     cd /home/jaka/story-studio
@@ -105,10 +133,28 @@ Data lives in `studio.db` (back this file up). Set `STUDIO_DB=/path/file.db` to 
 
 - Not real-time co-editing; one person at a time per script is best.
 - Plain-text editor (no bold/italics).
-- Local-first: for access outside your network, deploy behind HTTPS (e.g. a small VPS with a
-  reverse proxy). Do not expose the plain HTTP server directly to the internet.
+- Local-first by default. To put it online, follow `DEPLOY.md` (HTTPS reverse proxy, service, backups).
+  Do not expose the plain HTTP server directly to the internet.
 - API keys are stored unencrypted in `studio.db`; keep that file private.
 - Default model names are in `ai.py`; change them in Settings if a newer model is available.
+
+## Configuration (environment variables)
+
+| Variable | Purpose |
+|---|---|
+| `STUDIO_HOST`, `STUDIO_PORT` | Address and port to listen on (default `127.0.0.1:8000`; flags `--host`/`--port` also work) |
+| `STUDIO_DB` | Path of the SQLite file |
+| `STUDIO_SETUP_TOKEN` | If set, creating the very first admin account requires this token |
+| `STUDIO_TRUSTED_PROXY` | Comma-separated proxy addresses whose forwarded headers are believed (default `127.0.0.1,::1`) |
+| `STUDIO_COOKIE_SECURE=1` | Always mark the session cookie `Secure` |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | AI keys (preferred over saving them in the database) |
+| `ANTHROPIC_BASE_URL` | Testing only: point Claude calls at a local fake server |
+
+## Backups
+
+`python3 backup.py [--dir DIR] [--keep N]` writes a consistent, integrity-checked copy of the database (safe while
+the server runs), keeps the newest N (default 14), and creates files readable only by you. Do not copy `studio.db`
+with `cp` while the server is running. To restore, stop the server and copy a backup over `studio.db`.
 
 ## Security notes
 
@@ -116,8 +162,14 @@ Data lives in `studio.db` (back this file up). Set `STUDIO_DB=/path/file.db` to 
 - API endpoints require a session cookie, except sign-in and first-run setup. Only JSON bodies
   are accepted, and request size is capped at 5 MB.
 - Only admins can change AI settings, add or remove users.
-- There is no HTTPS, rate limiting or CSRF token. Cookies use `SameSite=Lax`. Keep it on a trusted
-  network, or put it behind an HTTPS reverse proxy.
+- Sign-in is rate limited: after 10 failed attempts from one address, or 20 for one username, within 15
+  minutes, further attempts get "429 Too many attempts" until the window passes. Failures are logged to stderr.
+- The session cookie is `HttpOnly` and `SameSite=Lax`, and `Secure` when the request came over HTTPS. Responses
+  carry a Content-Security-Policy (scripts only from the app itself), `X-Frame-Options: DENY`, and
+  `Strict-Transport-Security` over HTTPS.
+- The server speaks plain HTTP. Anything reachable from outside must sit behind an HTTPS reverse proxy.
+  `X-Forwarded-For` / `X-Forwarded-Proto` are only believed from addresses in `STUDIO_TRUSTED_PROXY`.
+- There is still no CSRF token (the `SameSite=Lax` cookie and the JSON-only API are the protection).
 
 ## Fonts
 

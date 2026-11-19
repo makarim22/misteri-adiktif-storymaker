@@ -12,3 +12,6 @@ __pycache__/
 
 # Old design snapshot kept on disk only
 design-v1-backup/
+
+# Database backups
+backups/
